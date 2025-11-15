@@ -49,3 +49,183 @@
 | `asyncio.as_completed([...])`                          | ✅ Inside a loop                                  | `await` each future as it finishes to process results incrementally                           |
 | Sync function that **doesn’t block**                   | ❌ No                                             | Just call normally; no need to wrap or await                                                  |
 | Sync function that **blocks** (e.g., `time.sleep`)     | ✅ Wrap in `to_thread` or `run_in_executor` first | Never `await` a pure blocking sync function — it will freeze the loop                         |
+
+# Event Loop Pseudo Code
+
+- run ready → run timers → run I/O events → repeat
+
+```python
+while True:
+    run_ready_callbacks()
+    run_due_timers()
+    poll_io_events()
+    add ready I/O callbacks to READY queue
+```
+
+- “Next event loop tick” = the next moment the event loop gets CPU time after your coroutine yields or finishes the current line of code = **next iteration of the loop**
+
+# More on asyncio
+
+## 🧠 First: The JS World
+
+### **JavaScript has two named queues:**
+
+| JS Queue            | Meaning                                            |
+| ------------------- | -------------------------------------------------- |
+| **Microtask queue** | Promises, `async/await`, `.then()` callbacks       |
+| **Macrotask queue** | `setTimeout`, `setInterval`, I/O events, UI events |
+
+Event loop order: **Run microtask queue → then macrotask → repeat**
+
+---
+
+## 🐍 Python World: Similar concepts, **different names**
+
+Python (asyncio) event loop has **the same conceptual split**, but they are NOT called micro/macro tasks.
+
+Instead, Python has these “named queues / structures”:
+
+---
+
+# 📌 **1. Ready Queue** _(“callbacks ready to run now”)_
+
+This is the closest to **JS microtask queue**.
+
+Contains:
+
+- Tasks that just became ready after an `await`
+- Callbacks scheduled via `loop.call_soon`
+- Callbacks from completed Futures
+- Tasks resumed from I/O events
+
+Think of `ready` as:
+
+> “Everything the loop should run immediately, before it does anything else.”
+
+---
+
+# 📌 **2. Scheduled Calls Queue (Timer Queue)**
+
+This is a **min-heap (priority queue)** of timed callbacks.
+
+Equivalent to **JS macrotask setTimeout**.
+
+Contains:
+
+- `loop.call_later(delay, callback)`
+- `loop.call_at(timestamp, callback)`
+- Sleep wakeups (`await asyncio.sleep(...)`)
+- Timeout events
+
+This queue determines **future callbacks** based on time.
+
+---
+
+# 📌 **3. I/O Selector (I/O event queue)**
+
+This is the **epoll / kqueue / I/O multiplexer** layer.
+
+Contains:
+
+- Socket read readiness
+- Socket write readiness
+- Pipe, file-descriptor, network events
+
+Equivalent to:
+
+> “macrotasks triggered by I/O events” in JS.
+
+When an I/O event is ready, the event loop puts the corresponding task into the **Ready Queue**.
+
+---
+
+# 📌 **4. Executor Thread/Process Callback Queue**
+
+When you use:
+
+- `asyncio.to_thread`
+- `loop.run_in_executor`
+- ProcessPoolExecutor
+
+The result of the thread/process comes back through a special callback:
+
+> “Executor result ready → put a callback into **Ready Queue**.”
+
+JS equivalent:
+
+- Worker threads returning results via event loop
+
+---
+
+# 📌 **5. Task Objects internally manage their own state**
+
+While not a queue, each `Task` individually manages:
+
+- PENDING
+- RUNNING
+- SCHEDULED
+- FINISHED
+- CANCELLED
+
+A Task becomes runnable and enters the **Ready Queue** whenever its awaited thing completes.
+
+---
+
+# 🎯 Summary Table (JS vs Python Queues)
+
+| Concept                            | JS Name                | Python Name                            | Notes                              |
+| ---------------------------------- | ---------------------- | -------------------------------------- | ---------------------------------- |
+| Tasks that must run ASAP           | **Microtask Queue**    | **Ready Queue**                        | Includes resumed coroutine steps   |
+| Delayed callbacks                  | **Macrotask (timers)** | **Scheduled Calls Queue (timer heap)** | Same concept                       |
+| Network / file I/O                 | **Macrotask (I/O)**    | **I/O selector / poller**              | When ready → goes into Ready Queue |
+| Background threads/process results | Worker callbacks       | Executor callback queue → Ready Queue  |                                    |
+| Promises                           | Promise microtasks     | Future callbacks → Ready Queue         |                                    |
+
+---
+
+# 📌 **Python event loop flow (simplified)**
+
+```
+while True:
+    run all READY callbacks (microtask equivalent)
+    run expired TIMERS (scheduled queue)
+    poll I/O (selector)
+    add ready I/O callbacks to READY queue
+```
+
+This is extremely similar to:
+
+JS:
+
+```
+run microtasks → run macrotasks → repeat
+```
+
+Python:
+
+```
+run ready → run timers → run I/O events → repeat
+```
+
+---
+
+# 🧨 Why Python doesn't have explicit micro/macro task vocabulary?
+
+Because:
+
+- Python exposes the **coroutines**, not the queue semantics
+- You control scheduling via `await`, `create_task`, and timers
+- The loop’s queues exist internally, not conceptually for devs
+
+But the behavior is nearly identical.
+
+---
+
+| “Queue Type”                   | JS Name           | Python Equivalent                    | When It's Used                                           |
+| ------------------------------ | ----------------- | ------------------------------------ | -------------------------------------------------------- |
+| **Immediate / next tick work** | Microtask queue   | **Ready queue**                      | Awaited coroutines resuming, FUTURE callbacks, call_soon |
+| **Timed work**                 | Macrotask (timer) | **Scheduled calls heap**             | sleep, call_later, timeouts                              |
+| **I/O work**                   | Macrotask (I/O)   | **I/O selector / poller**            | Sockets, network events                                  |
+| **Thread / process results**   | Worker callback   | **Executor callbacks → Ready queue** | to_thread, run_in_executor                               |
+
+---
