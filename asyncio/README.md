@@ -185,15 +185,44 @@ A Task becomes runnable and enters the **Ready Queue** whenever its awaited thin
 
 # 📌 **Python event loop flow (simplified)**
 
-```
+```python
 while True:
-    run all READY callbacks (microtask equivalent)
-    run expired TIMERS (scheduled queue)
-    poll I/O (selector)
-    add ready I/O callbacks to READY queue
+    run_ready_callbacks()
+        ↓
+        If one of these tasks hits `await`,
+        it is SUSPENDED and removed from ready queue.
+        Loop DOES NOT immediately jump to next steps.
+        It simply finishes processing current ready callback,
+        then proceeds:
+
+    run_due_timers()
+        - check if any timer expired (e.g. sleep finished)
+        - if yes → put those callbacks into READY queue
+
+    poll_io_events()
+        - check sockets, file descriptors
+        - if ready → put those callbacks into READY queue
+
+    (loop back)
+
 ```
 
-This is extremely similar to:
+## Analogy
+
+```python
+Task A running...
+Task A hits await something
+    → Task A pauses
+    → Task A is moved to "waiting list"
+    → Event loop takes control back
+Event loop:
+    - resumes Task B from ready queue
+    - resumes Task C
+    - checks timers
+    - checks I/O sockets
+    - when "something" is done, task A is moved back to ready queue
+Event loop picks Task A → resumes where it left off
+```
 
 JS:
 
@@ -205,6 +234,21 @@ Python:
 
 ```
 run ready → run timers → run I/O events → repeat
+```
+
+## What does `await`ing something means?
+
+```
+await something
+↓
+move coroutine to waiting state
+↓
+event loop runs other ready tasks, timers, I/O
+↓
+when awaited future is done, put coroutine back into READY queue
+↓
+resume it at next event loop tick
+
 ```
 
 ---
