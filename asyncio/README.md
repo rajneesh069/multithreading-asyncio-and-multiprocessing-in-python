@@ -66,6 +66,231 @@ while True:
 
 # More on asyncio
 
+- Calling an `async def` does NOT run its body. It only creates a coroutine object.
+
+```python
+async def check_status(rtn_prd):
+    return await loop.run_in_executor(
+        None,
+        lambda: file_download_status(
+            rtn_prd=rtn_prd,
+        ),
+    )
+
+tasks = [check_status(p) for p in request.rtn_prd] # This only creates coroutine objects.
+# It does NOT run:
+
+# any code inside check_status
+
+# definitely does NOT run await loop.run_in_executor
+
+# Nothing inside executes until the event loop actually schedules them.
+results = await asyncio.gather(*tasks) # Parallel "execution"
+```
+
+### Why doesn’t `check_status(p)` immediately call `await`?
+
+Because:
+
+- `check_status` is defined using `async def`
+
+- Calling an `async def` returns a coroutine object
+
+- A coroutine object is “paused at the first line”
+
+- It does not start executing until you do one of the following:
+
+  - `await check_status(p)`
+
+  - `asyncio.create_task(check_status(p))`
+
+  - `asyncio.gather(check_status(p))`
+
+  - the event loop resumes it for any reason
+
+### When do they actually run?
+
+When you do:
+
+```python
+results = await asyncio.gather(*tasks)
+```
+
+Now here's what happens:
+
+1. gather takes each coroutine
+
+2. Schedules all of them in the event loop immediately
+
+3. Starts running them concurrently
+
+4. Each coroutine enters the body of check_status
+
+5. They finally hit:
+
+```python
+await loop.run_in_executor(...)
+```
+
+**That is the FIRST moment any of the executor code actually executes.**
+
+✔️ So the flow in above case is:
+
+1. Define async function
+   ```python
+   async def check_status(...): # doesn't run anything
+   ```
+2. Call the async function → creates coroutine object
+
+   ```python
+   coro = check_status(p) # still doesn't run anything
+   ```
+
+3. Event loop runs them through gather
+
+   ```python
+   await asyncio.gather(coro1, coro2, coro3)
+   ```
+
+4. Now the body executes
+
+   ```python
+   return await loop.run_in_executor(...)
+   ```
+
+5. The run_in_executor submits work to the threadpool
+
+   - This is scheduled immediately in the threadpool
+
+   - But the coroutine pauses waiting for the thread result
+
+   - Meanwhile, other coroutines run — giving you concurrency
+
+## [Parallel v Sequential Execution in asyncio](./parallel-v-sequential.py)
+
+### **1. `await`**
+
+👉 _Wait for a coroutine/future to finish. Makes execution SEQUENTIAL at that point._
+
+---
+
+### **2. `asyncio.gather(*coros)`**
+
+👉 _Run multiple coroutines CONCURRENTLY and wait for all of them._
+
+---
+
+### **3. `asyncio.create_task(coro)`**
+
+👉 _Schedule a coroutine to run in the background (fire-and-forget). Runs CONCURRENTLY._
+
+---
+
+### **4. `asyncio.to_thread(func, *args)`**
+
+👉 _Run a blocking function in a thread. Returns a coroutine you must await. Runs CONCURRENTLY across threads._
+
+---
+
+### **5. `loop.run_in_executor(executor, func, *args)`**
+
+👉 _Lower-level version of `to_thread`. Runs blocking code in threads or processes._
+
+---
+
+### **6. `asyncio.sleep(x)`**
+
+👉 _Yield to event loop for x seconds. Doesn’t block the loop._
+
+---
+
+### **7. `asyncio.wait_for(coro, timeout)`**
+
+👉 _Run a coroutine with timeout enforcement._
+
+---
+
+### **8. `asyncio.Semaphore(n)`**
+
+👉 _Limit concurrency — useful when hitting APIs or databases._
+
+---
+
+## ⚡ When is execution **parallel**, **concurrent**, or **sequential**?
+
+### ✔️ **Sequential**
+
+You get sequential behavior when you do:
+
+#### **Using `await` inside a loop**
+
+```python
+for p in items:
+    result = await check(p)   # waits one-by-one
+```
+
+#### **Calling blocking code directly**
+
+```python
+result = some_heavy_cpu_func()   # blocks everything
+```
+
+---
+
+## ✔️ **Concurrent (async coroutines)**
+
+Coroutines run _overlapping in time_ (not literally parallel CPU threads unless using threads or processes).
+
+### **Using `asyncio.gather`**
+
+```python
+await asyncio.gather(check(a), check(b), check(c))
+```
+
+### **Using `asyncio.create_task`**
+
+```python
+task = asyncio.create_task(check(x))
+# (you don't await — it runs concurrently)
+```
+
+---
+
+## ✔️ **Parallel (actual threads or processes)**
+
+Happens when you offload blocking work.
+
+### **Using `asyncio.to_thread`**
+
+```python
+await asyncio.to_thread(blocking_func)
+```
+
+### **Using `run_in_executor`**
+
+```python
+await loop.run_in_executor(None, blocking_func)
+```
+
+### **Using `ProcessPoolExecutor`**
+
+```python
+await loop.run_in_executor(process_pool, cpu_heavy_func)
+```
+
+---
+
+# 🧠 TL;DR
+
+- **`await` inside a loop → sequential**
+- **`gather` → concurrent**
+- **`create_task` → fire-and-forget concurrent**
+- **`to_thread` / `run_in_executor` → parallel threads**
+- **CPU work → use processes for true parallelism**
+- **Blocking sync code → stick it in `to_thread`**
+
+# JS vs Python Comparison
+
 ## 🧠 First: The JS World
 
 ### **JavaScript has two named queues:**
